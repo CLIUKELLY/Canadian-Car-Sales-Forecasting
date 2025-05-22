@@ -1,0 +1,9 @@
+statsmodels
+prophet
+neuralprophet
+tensorflow
+lightgbm
+pandas
+numpy
+matplotlib
+scikit-learn
