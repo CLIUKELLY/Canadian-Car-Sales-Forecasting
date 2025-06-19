@@ -11,3 +11,4 @@ tensorflow==2.19.0
 plotly==5.24.1
 lightgbm  
 ipywidgets>=7.0.0
+optuna

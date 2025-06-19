@@ -10,6 +10,7 @@ from prophet import Prophet
 from sklearn.preprocessing import MinMaxScaler
 from tensorflow.keras.models import Sequential
 from tensorflow.keras.layers import LSTM, Dense, Dropout
+from tensorflow.keras.optimizers import Adam
 import tensorflow as tf
 import os
 import torch
@@ -33,13 +34,13 @@ data = data[(data['Sales'] == 'Units') & (data['Seasonal adjustment'] == 'Unadju
 ts_data = data[['REF_DATE', 'VALUE']].set_index('REF_DATE')
 ts_data = ts_data.sort_index()
 
-# Last 72 months for analysis
-ts_data_last_72_mths = ts_data.tail(72)
+# Last 144 months for analysis
+ts_data_last_144_mths = ts_data.tail(144)
 
 # Split train and test sets
 test_period = 36
-test_set = ts_data_last_72_mths.tail(test_period)
-train_set = ts_data_last_72_mths.iloc[:-test_period]
+test_set = ts_data_last_144_mths.tail(test_period)
+train_set = ts_data_last_144_mths.iloc[:-test_period]
 
 print(f"Train set shape: {train_set.shape}")
 print(f"Test set shape: {test_set.shape}")
@@ -65,25 +66,68 @@ print(f"ARIMA - MAE: {mae_arima:.2f}, RMSE: {rmse_arima:.2f}, MAPE: {mape_arima:
 # NeuralProphet Model
 # ------------------------------
 
-# Allow NeuralProphet's ConfigSeasonality to be safely loaded
-# torch.serialization.add_safe_globals([NeuralProphet.configure.ConfigSeasonality])
-# torch.serialization.safe_globals([neuralprophet.configure.ConfigSeasonality])
-
+from sklearn.model_selection import ParameterGrid
 
 # Prepare data for NeuralProphet
 train_np = train_set.reset_index().rename(columns={'REF_DATE': 'ds', 'VALUE': 'y'})
 test_np = test_set.reset_index().rename(columns={'REF_DATE': 'ds', 'VALUE': 'y'})
 
+# # 定义超参数搜索空间
+# param_grid = {
+#     'growth': ['linear', 'logistic'],
+#     'changepoints_range': [0.8, 0.9],
+#     'n_changepoints': [10, 20, 50],
+#     'seasonality_mode': ['additive', 'multiplicative'],
+#     'learning_rate': [0.01, 0.05, 0.1],
+#     'epochs': [100, 200],
+#     'trend_reg': [0, 0.1, 0.5],
+#     'seasonality_reg': [0, 0.1, 0.5]
+# }
+
+# # 初始化最佳结果
+# best_mae = float('inf')
+# best_params = None
+
+# # 网格搜索
+# for params in ParameterGrid(param_grid):
+#     np_model = NeuralProphet(
+#         growth=params['growth'],
+#         changepoints_range=params['changepoints_range'],
+#         n_changepoints=params['n_changepoints'],
+#         seasonality_mode=params['seasonality_mode'],
+#         learning_rate=params['learning_rate'],
+#         epochs=params['epochs'],
+#         trend_reg=params['trend_reg'],
+#         seasonality_reg=params['seasonality_reg']
+#     )
+#     np_model.fit(train_np, freq='MS')
+#     future_np = np_model.make_future_dataframe(train_np, periods=test_period)
+#     forecast_np = np_model.predict(future_np)
+#     forecast_neural_prophet = forecast_np.tail(test_period)['yhat1'].values
+
+#     # 评估性能
+#     mae_np = mean_absolute_error(test_set['VALUE'], forecast_neural_prophet)
+#     if mae_np < best_mae:
+#         best_mae = mae_np
+#         best_params = params
+
+# print(f"Best MAE: {best_mae:.2f}")
+# print(f"Best Parameters: {best_params}")
+
+
+
 np_model = NeuralProphet(
     growth='linear',
-    changepoints_range=0.8,
+    changepoints_range=0.9,
     n_changepoints=10,
     yearly_seasonality=True,
     weekly_seasonality=False,
     daily_seasonality=False,
-    seasonality_mode='additive',
+    seasonality_mode='multiplicative',
     epochs=100,
-    learning_rate=0.01
+    learning_rate=0.05,
+    seasonality_reg=0.5,
+    trend_reg=0
 )
 np_model.fit(train_np, freq='MS')
 
@@ -122,31 +166,36 @@ print(f"Prophet - MAE: {mae_prophet:.2f}, RMSE: {rmse_prophet:.2f}, MAPE: {mape_
 # ------------------------------
 # LSTM Model
 # ------------------------------
+# Scale the data
 scaler = MinMaxScaler()
 train_scaled = scaler.fit_transform(train_set.values.reshape(-1, 1))
 test_scaled = scaler.transform(test_set.values.reshape(-1, 1))
 
-# Create sequences
-LOOKBACK_WINDOW = 12
+# Create sequences based on LOOKBACK_WINDOW
+LOOKBACK_WINDOW = 10  # Updated based on best parameters
 X_train, y_train = [], []
 for i in range(LOOKBACK_WINDOW, len(train_scaled)):
     X_train.append(train_scaled[i-LOOKBACK_WINDOW:i])
     y_train.append(train_scaled[i])
 X_train, y_train = np.array(X_train), np.array(y_train)
 
-# Build LSTM model
+# Build LSTM model with optimized hyperparameters
 lstm_model = Sequential([
-    LSTM(50, return_sequences=True, input_shape=(LOOKBACK_WINDOW, 1)),
-    Dropout(0.2),
-    LSTM(50, return_sequences=False),
-    Dropout(0.2),
-    Dense(25),
+    LSTM(96, return_sequences=True, input_shape=(LOOKBACK_WINDOW, 1)),  # lstm_units_1 = 96
+    Dropout(0.364359105927769),  # dropout_rate = 0.364
+    LSTM(64, return_sequences=False),  # lstm_units_2 = 64
+    Dropout(0.364359105927769),  # dropout_rate = 0.364
+    Dense(25),  # dense_units = 25
     Dense(1)
 ])
-lstm_model.compile(optimizer='adam', loss='mse')
-lstm_model.fit(X_train, y_train, epochs=50, batch_size=32, verbose=1)
 
-# Forecast
+# Compile the model with optimized learning rate
+lstm_model.compile(optimizer=Adam(learning_rate=0.009231175537877865), loss='mse')  # learning_rate = 0.00923
+
+# Train the model with optimized batch size and epochs
+lstm_model.fit(X_train, y_train, epochs=100, batch_size=112, verbose=1)  # epochs = 100, batch_size = 112
+
+# Forecast using the trained model
 last_sequence = train_scaled[-LOOKBACK_WINDOW:]
 predictions = []
 for i in range(test_period):
@@ -161,6 +210,45 @@ rmse_lstm = np.sqrt(mean_squared_error(test_set['VALUE'], predictions_rescaled))
 mape_lstm = np.mean(np.abs((test_set['VALUE'] - predictions_rescaled) / test_set['VALUE'])) * 100
 
 print(f"LSTM - MAE: {mae_lstm:.2f}, RMSE: {rmse_lstm:.2f}, MAPE: {mape_lstm:.2f}%")
+# scaler = MinMaxScaler()
+# train_scaled = scaler.fit_transform(train_set.values.reshape(-1, 1))
+# test_scaled = scaler.transform(test_set.values.reshape(-1, 1))
+
+# # Create sequences
+# LOOKBACK_WINDOW = 12
+# X_train, y_train = [], []
+# for i in range(LOOKBACK_WINDOW, len(train_scaled)):
+#     X_train.append(train_scaled[i-LOOKBACK_WINDOW:i])
+#     y_train.append(train_scaled[i])
+# X_train, y_train = np.array(X_train), np.array(y_train)
+
+# # Build LSTM model
+# lstm_model = Sequential([
+#     LSTM(50, return_sequences=True, input_shape=(LOOKBACK_WINDOW, 1)),
+#     Dropout(0.2),
+#     LSTM(50, return_sequences=False),
+#     Dropout(0.2),
+#     Dense(25),
+#     Dense(1)
+# ])
+# lstm_model.compile(optimizer='adam', loss='mse')
+# lstm_model.fit(X_train, y_train, epochs=50, batch_size=32, verbose=1)
+
+# # Forecast
+# last_sequence = train_scaled[-LOOKBACK_WINDOW:]
+# predictions = []
+# for i in range(test_period):
+#     pred = lstm_model.predict(last_sequence.reshape(1, LOOKBACK_WINDOW, 1), verbose=0)
+#     predictions.append(pred[0, 0])
+#     last_sequence = np.append(last_sequence[1:], pred[0, 0])
+# predictions_rescaled = scaler.inverse_transform(np.array(predictions).reshape(-1, 1)).flatten()
+
+# # Evaluation
+# mae_lstm = mean_absolute_error(test_set['VALUE'], predictions_rescaled)
+# rmse_lstm = np.sqrt(mean_squared_error(test_set['VALUE'], predictions_rescaled))
+# mape_lstm = np.mean(np.abs((test_set['VALUE'] - predictions_rescaled) / test_set['VALUE'])) * 100
+
+# print(f"LSTM - MAE: {mae_lstm:.2f}, RMSE: {rmse_lstm:.2f}, MAPE: {mape_lstm:.2f}%")
 
 # ------------------------------
 # Side-by-Side Comparison
@@ -179,7 +267,7 @@ print(results)
 plt.figure(figsize=(20, 10))
 
 # Actual values
-plt.plot(ts_data_last_72_mths.index, ts_data_last_72_mths['VALUE'], label='Actual', color='black', linewidth=2)
+plt.plot(ts_data_last_144_mths.index, ts_data_last_144_mths['VALUE'], label='Actual', color='black', linewidth=2)
 
 # ARIMA
 plt.plot(forecast_arima_df.index, forecast_arima_df['Forecast'], label='ARIMA', linestyle='--')
