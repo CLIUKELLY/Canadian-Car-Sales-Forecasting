@@ -9,3 +9,5 @@ neuralprophet
 prophet
 tensorflow
 plotly
+lightgbm
+ipywidgets>=7.0.0
